@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Apple Health Parser</title>
+        <script>
+            // Pick the right stylesheet before first paint so the page never flashes the wrong theme.
+            (function () {
+                var theme = "light";
+                try {
+                    var saved = localStorage.getItem("theme");
+                    if (saved === "light" || saved === "dark") {
+                        theme = saved;
+                    } else if (
+                        matchMedia("(prefers-color-scheme: dark)").matches
+                    ) {
+                        theme = "dark";
+                    }
+                } catch (err) {
+                    // Storage can be blocked (private window, disabled site data): fall back to light.
+                }
+                document.documentElement.dataset.theme = theme;
+                document.write(
+                    '<link rel="stylesheet" id="theme-stylesheet" href="' +
+                        (theme === "dark"
+                            ? "terminal-dark.css"
+                            : "terminal.css") +
+                        '" />',
+                );
+            })();
+        </script>
+        <script src="https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js"></script>
+        <script src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
+        <style>
+            body {
+                width: 75%;
+                max-width: 900px;
+                margin: 0 auto;
+                padding: 2rem 1rem 4rem;
+            }
+
+            .header-top {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+            }
+            .title-block {
+                flex: 1 1 auto;
+                min-width: 0;
+            }
+            .header-top h1 {
+                margin-bottom: 0;
+            }
+            /* The dark stylesheet drops the light theme's uppercase/size treatment
+     for h1; reinstate that formatting so the title matches. */
+            [data-theme="light"] h1 {
+                text-decoration: none;
+            }
+            [data-theme="dark"] h1 {
+                text-decoration: none;
+                text-decoration-thickness: 2px;
+                text-underline-offset: calc(var(--font-size, 1rem) * 0.2);
+                text-transform: uppercase;
+                font-size: calc(var(--font-size, 1rem) * 1.1);
+                letter-spacing: 0.04em;
+            }
+            .subtitle {
+                margin: 0;
+                font-size: 0.9rem;
+                font-weight: bold;
+                text-transform: uppercase;
+                letter-spacing: 0.08em;
+                color: var(--accent);
+            }
+            .header-actions {
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;
+                flex: 0 0 auto;
+            }
+            .github-link,
+            .theme-toggle {
+                line-height: 1;
+                color: var(--foreground);
+            }
+            .github-link svg,
+            .theme-toggle svg {
+                display: block;
+                width: 1.6rem;
+                height: 1.6rem;
+            }
+            .github-link:hover,
+            .theme-toggle:hover {
+                background: none;
+                color: var(--accent);
+            }
+            .theme-toggle {
+                background: none;
+                border: none;
+                padding: 0;
+                cursor: pointer;
+            }
+
+            fieldset {
+                display: block;
+                width: 100%;
+                box-sizing: border-box;
+                margin-bottom: 1.5rem;
+            }
+            fieldset[hidden] {
+                display: none !important;
+            }
+            legend {
+                padding: 0 0.5rem;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+                font-size: 0.85em;
+            }
+
+            /* Hard offset shadows: a deep green derived from the theme accent instead of black */
+            :root {
+                --shadow: color-mix(in srgb, var(--accent) 45%, #000);
+            }
+
+            button:disabled {
+                opacity: 0.4;
+                cursor: not-allowed;
+                box-shadow: none !important;
+            }
+
+            .input-row {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 0.75rem 1rem;
+                margin-bottom: 1.5rem;
+            }
+            .input-row input,
+            .input-row select,
+            .input-row button,
+            .input-row label {
+                width: auto;
+                margin: 0;
+            }
+            .input-row input[type="file"] {
+                width: 18em;
+                font-size: 0.8em;
+            }
+            .input-row input[type="file"]::file-selector-button {
+                font-size: 1.25em; /* keeps the "Choose File" button at its original size */
+            }
+
+            details.flags-picker {
+                font-size: 1em;
+            }
+
+            .button-row {
+                display: flex;
+                gap: 0.5rem;
+            }
+            .button-row button {
+                width: auto;
+                font-size: 0.85em;
+                padding: 3px 12px;
+                border-width: 2px;
+                margin-top: 0;
+            }
+
+            .flags-controls {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 1rem 2.5rem;
+                padding: 1.2rem 0;
+            }
+            .flags-controls .button-row,
+            .flags-controls .summary-toggle {
+                margin: 0;
+            }
+
+            .summary-toggle {
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                width: auto;
+                margin: 0.75rem 0;
+                font-size: 0.85em;
+                flex: 0 0 auto;
+                white-space: nowrap;
+            }
+
+            #flags {
+                font-size: 0.95em;
+                display: grid;
+                grid-auto-flow: column;
+                grid-auto-columns: minmax(0, 1fr);
+                gap: 0.4rem 1rem;
+                max-width: 100%;
+                overflow-x: auto;
+                box-sizing: border-box;
+            }
+            #flags label {
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                margin-top: 0;
+                width: auto;
+                min-width: 0;
+                overflow-wrap: anywhere;
+            }
+            #flags label.flag-found,
+            #flags label.flag-missing {
+                padding: 0.1em 0.4em;
+                border-radius: 1px;
+            }
+            #flags label.flag-found {
+                background: color-mix(in srgb, #2e7d32 30%, transparent);
+            }
+            #flags label.flag-missing {
+                background: color-mix(in srgb, #c62828 30%, transparent);
+            }
+
+            .progress-row {
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;
+            }
+            .progress-ascii {
+                white-space: pre;
+                overflow-x: auto;
+                font-weight: bold;
+                letter-spacing: 0;
+                flex: 0 1 auto;
+                min-width: 0;
+            }
+            #progress-label {
+                margin: 0;
+                white-space: nowrap;
+            }
+            .progress-ascii .filled {
+                color: var(--accent);
+            }
+            .progress-ascii .empty {
+                color: color-mix(in srgb, var(--foreground) 20%, transparent);
+            }
+
+            #report:not(:empty) {
+                margin-top: 2.5rem;
+            }
+            #report .chart-frame {
+                margin: 1rem 0;
+                overflow: hidden;
+            }
+            #report section.metric {
+                margin: 2.5rem 0;
+            }
+            #report p.description,
+            #report p.stats {
+                font-size: 0.93em;
+            }
+            #report p.description {
+                opacity: 0.6;
+            }
+            #report .year-recap p.year {
+                font-size: 2.2em;
+                font-weight: bold;
+            }
+            #report p.stats strong {
+                background: color-mix(in srgb, var(--accent) 25%, transparent);
+                padding: 0.05em 0.4em;
+                border-radius: 3px;
+            }
+            #report table.summary {
+                margin-left: auto;
+                margin-right: auto;
+                font-size: 0.78em;
+            }
+            #report table.summary caption {
+                display: none;
+            }
+            #report.hide-summary table.summary {
+                display: none;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <div class="header-top">
+                <div class="title-block">
+                    <h1>Apple Health Parser</h1>
+                    <p class="subtitle">Year Recap</p>
+                </div>
+                <div class="header-actions">
+                    <button
+                        type="button"
+                        class="theme-toggle"
+                        id="themeToggle"
+                        aria-label="Switch theme"
+                        title="Switch theme"
+                    >
+                        <svg
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 2v16a8 8 0 0 1 0-16Z"
+                            />
+                        </svg>
+                    </button>
+                    <a
+                        class="github-link"
+                        href="https://github.com/alxdrcirilo/apple-health-parser"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label="View source on GitHub"
+                        title="View source on GitHub"
+                    >
+                        <svg
+                            viewBox="0 0 16 16"
+                            fill="currentColor"
+                            aria-hidden="true"
+                        >
+                            <path
+                                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+                            />
+                        </svg>
+                    </a>
+                </div>
+            </div>
+            <hr
+                style="
+                    background-color: var(--background);
+                    border-top: var(--accent) dashed 3px;
+                "
+            />
+            <p>
+                Build a yearly report from your Apple Health export, entirely in
+                your browser.
+            </p>
+            <p>
+                Runs
+                <a
+                    href="https://pyodide.org"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >Pyodide</a
+                >
+                (Python compiled to WebAssembly) and the
+                <a
+                    href="https://github.com/alxdrcirilo/apple-health-parser"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >apple-health-parser</a
+                >
+                package directly in the page, so your data never leaves your
+                device.
+            </p>
+        </header>
+
+        <fieldset style="box-shadow: 2px 2px 0 var(--foreground)">
+            <legend>Input</legend>
+            <div class="input-row">
+                <label for="zipFile">Pick export.zip</label>
+                <input
+                    style="box-shadow: 2px 2px 0 var(--foreground)"
+                    type="file"
+                    id="zipFile"
+                    accept=".zip"
+                />
+                <label for="year">Year</label>
+                <select
+                    style="box-shadow: 2px 2px 0 var(--foreground)"
+                    id="year"
+                ></select>
+            </div>
+
+            <div class="input-row">
+                <button
+                    id="generate"
+                    style="box-shadow: 2px 2px 0 var(--shadow)"
+                    disabled
+                >
+                    Generate
+                </button>
+                <button
+                    id="exportPdf"
+                    style="box-shadow: 2px 2px 0 var(--shadow)"
+                    type="button"
+                    disabled
+                    title="Download this report as a PDF, built with apple-health-parser's own PDF report layout"
+                >
+                    Export PDF
+                </button>
+            </div>
+
+            <details class="flags-picker">
+                <summary>Flags <span id="flag-count"></span></summary>
+                <div class="flags-controls">
+                    <p class="button-row">
+                        <button type="button" id="select-all">Select all</button>
+                        <button type="button" id="select-none">Select none</button>
+                    </p>
+                    <label class="summary-toggle">
+                        <input type="checkbox" id="showSummary" checked />
+                        Show five-number summary
+                    </label>
+                </div>
+                <div id="flags">Loading flags…</div>
+            </details>
+        </fieldset>
+
+        <fieldset id="progress-wrap" hidden>
+            <legend>Progress</legend>
+            <div class="progress-row">
+                <div id="progress" class="progress-ascii"></div>
+                <p id="progress-label"></p>
+            </div>
+        </fieldset>
+
+        <div id="report"></div>
+
+        <script>
+            async function main() {
+                const log = (msg) => console.log(msg);
+                const generateBtn = document.getElementById("generate");
+                const yearSelect = document.getElementById("year");
+                const flagsEl = document.getElementById("flags");
+                const flagCountEl = document.getElementById("flag-count");
+                const exportPdfBtn = document.getElementById("exportPdf");
+                // Set from the last successful generate() result; Export PDF reads its
+                // per-flag stats_text/quantiles from here instead of the rendered DOM.
+                let lastRecapResult = null;
+                generateBtn.textContent = "Loading…";
+
+                // Builds the real apple-health-parser PDF report (same fpdf2 layout as the
+                // CLI) from what's already on screen, re-rasterizing each Plotly chart to a
+                // PNG client-side (Plotly.toImage, no kaleido/Chromium needed) instead of
+                // recomputing anything. Stays disabled until a report has been generated.
+                exportPdfBtn.addEventListener("click", async () => {
+                    exportPdfBtn.disabled = true;
+                    exportPdfBtn.textContent = "Exporting…";
+                    try {
+                        const year = parseInt(yearSelect.value, 10);
+
+                        const entries = [];
+                        for (const section of document.querySelectorAll(
+                            "#report section.metric[data-flag]",
+                        )) {
+                            // The flag identifier, and its stats_text/quantiles, come straight
+                            // from the last generate() result - not re-derived from rendered
+                            // HTML, so they can't drift from whatever recap_html.py's template
+                            // happens to look like.
+                            const flag = section.dataset.flag;
+                            const statsText = lastRecapResult?.stats_text?.[flag];
+                            const quantiles = lastRecapResult?.quantiles?.[flag];
+                            if (statsText === undefined || !quantiles) continue;
+
+                            const [chartFrame, boxFrame] =
+                                section.querySelectorAll(".chart-frame");
+                            const chartGd = chartFrame?.querySelector(
+                                ".js-plotly-plot",
+                            );
+                            const boxGd = boxFrame?.querySelector(
+                                ".js-plotly-plot",
+                            );
+                            if (!chartGd || !boxGd) continue;
+
+                            const [chartImg, boxImg] = await Promise.all([
+                                Plotly.toImage(chartGd, {
+                                    format: "png",
+                                    width: 900,
+                                    height: 450,
+                                    scale: 2,
+                                }),
+                                Plotly.toImage(boxGd, {
+                                    format: "png",
+                                    width: 600,
+                                    height: 100,
+                                    scale: 2,
+                                }),
+                            ]);
+
+                            entries.push({
+                                flag,
+                                year,
+                                image_b64: chartImg.split(",")[1],
+                                box_image_b64: boxImg.split(",")[1],
+                                stats_text: statsText,
+                                quantiles,
+                            });
+                        }
+
+                        if (!entries.length) {
+                            alert("Nothing to export. Generate a report first.");
+                            return;
+                        }
+
+                        pyodide.globals.set(
+                            "pdf_entries_json",
+                            JSON.stringify(entries),
+                        );
+                        await pyodide.runPythonAsync(`
+import base64
+import json
+from io import BytesIO
+
+from apple_health_parser.scripts.recap.recap_pdf import PdfSectionData, get_recap_report
+
+entries = json.loads(pdf_entries_json)
+pdf_section_data = {
+    entry["flag"]: PdfSectionData(
+        year=entry["year"],
+        image_data=BytesIO(base64.b64decode(entry["image_b64"])),
+        box_image_data=BytesIO(base64.b64decode(entry["box_image_b64"])),
+        stats_text=entry["stats_text"],
+        quantiles=tuple(entry["quantiles"]),
+    )
+    for entry in entries
+}
+get_recap_report(pdf_section_data)
+      `);
+
+                        const pdfBytes = pyodide.FS.readFile("report.pdf");
+                        const blob = new Blob([pdfBytes], {
+                            type: "application/pdf",
+                        });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `apple-health-year-recap-${year}.pdf`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                    } catch (err) {
+                        log("ERROR exporting PDF: " + (err.message || String(err)));
+                        alert(
+                            "Failed to export PDF: " +
+                                (err.message || String(err)),
+                        );
+                    } finally {
+                        exportPdfBtn.disabled = false;
+                        exportPdfBtn.textContent = "Export PDF";
+                    }
+                });
+
+                // Theme switch: swaps the stylesheet file and remembers the choice per browser
+                const themeToggle = document.getElementById("themeToggle");
+                const themeStylesheet =
+                    document.getElementById("theme-stylesheet");
+                themeToggle.addEventListener("click", () => {
+                    const next =
+                        document.documentElement.dataset.theme === "dark"
+                            ? "light"
+                            : "dark";
+                    document.documentElement.dataset.theme = next;
+                    if (themeStylesheet)
+                        themeStylesheet.href =
+                            next === "dark" ? "terminal-dark.css" : "terminal.css";
+                    try {
+                        localStorage.setItem("theme", next);
+                    } catch (err) {
+                        // Storage unavailable: the switch still works for this page view
+                    }
+                });
+
+                // Years newest first, defaulting to the current year
+                const thisYear = new Date().getFullYear();
+                for (let y = thisYear; y >= 2000; y--) {
+                    yearSelect.add(new Option(y, y));
+                }
+
+                // Wire the summary toggle immediately so it works even before Pyodide loads.
+                const showSummary = document.getElementById("showSummary");
+                showSummary.addEventListener("change", () => {
+                    document
+                        .getElementById("report")
+                        .classList.toggle("hide-summary", !showSummary.checked);
+                });
+
+                log("Loading Pyodide runtime…");
+                const pyodide = await loadPyodide();
+
+                log("Loading micropip…");
+                await pyodide.loadPackage("micropip");
+
+                log(
+                    "Installing pandas, lxml, pydantic, pydantic-extra-types, pyyaml, plotly, tzdata, click, fpdf2…",
+                );
+                await pyodide.runPythonAsync(`
+import micropip
+await micropip.install(["pandas", "lxml", "pydantic", "pydantic-extra-types", "pyyaml", "plotly", "tzdata", "click", "fpdf2"])
+
+# fpdf2 imports these at module load time (for remote image URLs we never use), but
+# Pyodide's urllib/http.client lack SSL support, so they're missing entirely. Stub
+# them out before fpdf2 is ever imported so the import itself doesn't fail.
+import http.client
+import urllib.request
+
+if not hasattr(urllib.request, "HTTPSHandler"):
+    urllib.request.HTTPSHandler = type("HTTPSHandler", (), {})
+if not hasattr(http.client, "HTTPSConnection"):
+    http.client.HTTPSConnection = type("HTTPSConnection", (http.client.HTTPConnection,), {})
+  `);
+
+                // Local dev only: the wheel is built by `make wheel` from the sibling apple-health-parser
+                // checkout and its exact filename (version-dependent) is written to dist/wheel-filename.txt.
+                // TODO: once apple-health-parser ships a release with the recap_web/recap_html modules,
+                // switch this to `await micropip.install("apple-health-parser==<version>")` from PyPI,
+                // and drop the local dist/ wheel entirely - that's what makes a GitHub Pages deploy possible
+                // with no build step on this repo's side.
+                const wheelResp = await fetch("./dist/wheel-filename.txt");
+                if (!wheelResp.ok)
+                    throw new Error(`Failed to fetch wheel-filename.txt: ${wheelResp.status}`);
+                const wheelName = (await wheelResp.text()).trim();
+                log(
+                    `Installing apple-health-parser from local wheel ${wheelName} (deps=False)…`,
+                );
+                await pyodide.runPythonAsync(`
+import micropip
+await micropip.install("./dist/${wheelName}", deps=False)
+  `);
+
+                // Metrics most iPhone/Apple Watch users actually have data for, covering the
+                // three Activity rings, core Watch vitals, and overall fitness/weight.
+                // Niche running-dynamics/cycling-power/audio-exposure metrics that only apply
+                // with specific hardware or workouts are left unchecked.
+                const DEFAULT_SELECTED_FLAGS = new Set([
+                    "HKQuantityTypeIdentifierStepCount",
+                    "HKQuantityTypeIdentifierDistanceWalkingRunning",
+                    "HKQuantityTypeIdentifierActiveEnergyBurned",
+                    "HKQuantityTypeIdentifierAppleExerciseTime",
+                    "HKQuantityTypeIdentifierAppleStandTime",
+                    "HKQuantityTypeIdentifierFlightsClimbed",
+                    "HKQuantityTypeIdentifierHeartRate",
+                    "HKQuantityTypeIdentifierRestingHeartRate",
+                    "HKQuantityTypeIdentifierBodyMass",
+                    "HKQuantityTypeIdentifierVO2Max",
+                ]);
+
+                // Flag list comes from the package's flags.yaml; the 10 flags above start
+                // selected, the rest start unselected
+                const flagMeta = JSON.parse(
+                    await pyodide.runPythonAsync(`
+import json
+from dataclasses import asdict
+from apple_health_parser.scripts.recap.metrics.definitions import METRIC_DEFINITIONS
+json.dumps({flag: asdict(meta) for flag, meta in METRIC_DEFINITIONS.items()})
+  `),
+                );
+
+                flagsEl.textContent = "";
+                const sortedFlags = Object.entries(flagMeta).sort((a, b) =>
+                    a[1].name.localeCompare(b[1].name),
+                );
+                // flagsEl.clientWidth is 0 when the <details> is closed; measure
+                // the enclosing fieldset instead, which is always rendered.
+                const containerWidth =
+                    flagsEl.closest("fieldset")?.clientWidth ?? 640;
+                const flagColumns =
+                    containerWidth < 300
+                        ? 1
+                        : containerWidth < 480
+                          ? 2
+                          : containerWidth < 640
+                            ? 3
+                            : 4;
+                flagsEl.style.gridTemplateRows = `repeat(${Math.ceil(sortedFlags.length / flagColumns)}, auto)`;
+                for (const [flag, meta] of sortedFlags) {
+                    const label = document.createElement("label");
+                    label.title = flag;
+                    const box = document.createElement("input");
+                    box.type = "checkbox";
+                    box.value = flag;
+                    box.checked = DEFAULT_SELECTED_FLAGS.has(flag);
+                    label.append(box, " " + meta.name);
+                    flagsEl.append(label);
+                }
+
+                const selectedFlags = () =>
+                    [...flagsEl.querySelectorAll("input:checked")].map(
+                        (box) => box.value,
+                    );
+
+                function updateFlagCount() {
+                    flagCountEl.textContent = `(${selectedFlags().length} of ${flagsEl.querySelectorAll("input").length} selected)`;
+                }
+                flagsEl.addEventListener("change", updateFlagCount);
+                updateFlagCount();
+
+                function setAllFlags(checked) {
+                    flagsEl
+                        .querySelectorAll("input")
+                        .forEach((box) => (box.checked = checked));
+                    updateFlagCount();
+                }
+                document
+                    .getElementById("select-all")
+                    .addEventListener("click", () => setAllFlags(true));
+                document
+                    .getElementById("select-none")
+                    .addEventListener("click", () => setAllFlags(false));
+
+                log("Ready. Pick your export.zip and click Generate.");
+                generateBtn.textContent = "Generate";
+                generateBtn.disabled = false;
+
+                const progressWrap = document.getElementById("progress-wrap");
+                const progress = document.getElementById("progress");
+                const progressLabel = document.getElementById("progress-label");
+
+                const BAR_WIDTH = 30;
+                function renderAsciiBar(pct) {
+                    const filled = Math.round((pct / 100) * BAR_WIDTH);
+                    progress.innerHTML =
+                        `${pct.toString().padStart(3, " ")}% │` +
+                        `<span class="filled">${"█".repeat(filled)}</span>` +
+                        `<span class="empty">${"░".repeat(BAR_WIDTH - filled)}</span>│`;
+                }
+
+                function updateProgress(n, total) {
+                    const pct = Math.round((n / total) * 100);
+                    renderAsciiBar(pct);
+                    progressLabel.textContent = `Processing metric ${n}/${total}`;
+                }
+                function updateScanProgress(count) {
+                    progressLabel.textContent = `Scanning records… ${count.toLocaleString()}`;
+                }
+                pyodide.globals.set("js_progress_callback", updateProgress);
+                pyodide.globals.set("js_scan_callback", updateScanProgress);
+
+                function markFlagResults(counts) {
+                    flagsEl
+                        .querySelectorAll("input[type=checkbox]")
+                        .forEach((box) => {
+                            const label = box.closest("label");
+                            label.classList.remove(
+                                "flag-found",
+                                "flag-missing",
+                            );
+                            if (box.value in counts) {
+                                label.classList.add(
+                                    counts[box.value] > 0
+                                        ? "flag-found"
+                                        : "flag-missing",
+                                );
+                            }
+                        });
+                }
+
+                generateBtn.addEventListener("click", async () => {
+                    const fileInput = document.getElementById("zipFile");
+                    const year = parseInt(yearSelect.value, 10);
+                    if (!fileInput.files.length) {
+                        alert("Pick an export.zip file first");
+                        return;
+                    }
+                    const selected = selectedFlags();
+                    if (!selected.length) {
+                        alert("Select at least one flag");
+                        return;
+                    }
+
+                    // Only reset the current report/export state once the input has actually
+                    // passed validation, so a failed re-generate attempt doesn't wipe out a
+                    // perfectly good, already-exportable report.
+                    const reportEl = document.getElementById("report");
+                    reportEl.innerHTML = "";
+                    exportPdfBtn.disabled = true;
+                    lastRecapResult = null;
+                    flagsEl
+                        .querySelectorAll("label")
+                        .forEach((label) =>
+                            label.classList.remove(
+                                "flag-found",
+                                "flag-missing",
+                            ),
+                        );
+
+                    log(`Reading ${fileInput.files[0].name}…`);
+                    const buf = await fileInput.files[0].arrayBuffer();
+                    pyodide.FS.writeFile(
+                        "/tmp/export.zip",
+                        new Uint8Array(buf),
+                    );
+
+                    progressWrap.hidden = false;
+                    renderAsciiBar(0);
+                    progressLabel.textContent = "Scanning records…";
+                    generateBtn.disabled = true;
+
+                    try {
+                        log(`Generating recap report for ${year}…`);
+                        pyodide.globals.set(
+                            "selected_flags_json",
+                            JSON.stringify(selected),
+                        );
+                        const result = JSON.parse(
+                            await pyodide.runPythonAsync(`
+from apple_health_parser.scripts.recap.recap_web import generate_recap_report_html
+import dataclasses
+import json
+result = await generate_recap_report_html(
+    "/tmp/export.zip", ${year}, output_dir="/tmp/data",
+    progress_callback=js_progress_callback, scan_callback=js_scan_callback,
+    flags=json.loads(selected_flags_json),
+)
+json.dumps(dataclasses.asdict(result))
+      `),
+                        );
+                        lastRecapResult = result;
+                        markFlagResults(result.flag_counts);
+
+                        log("Done. Rendering…");
+
+                        // innerHTML doesn't execute embedded <script> tags, so Plotly's generated
+                        // scripts need to be re-created manually for them to actually run.
+                        reportEl.innerHTML = result.html;
+                        // Re-sync the summary toggle: innerHTML replacement preserves the class on
+                        // the element itself, but do it explicitly so the state is always correct.
+                        reportEl.classList.toggle("hide-summary", !showSummary.checked);
+                        reportEl
+                            .querySelectorAll("script")
+                            .forEach((oldScript) => {
+                                const newScript =
+                                    document.createElement("script");
+                                newScript.textContent = oldScript.textContent;
+                                oldScript.replaceWith(newScript);
+                            });
+
+                        // Sort metric sections alphabetically by name.
+                        const metricContainer =
+                            reportEl.querySelector(".year-recap") || reportEl;
+                        const metricSections = [
+                            ...reportEl.querySelectorAll("section.metric"),
+                        ].sort((a, b) => {
+                            const nameA =
+                                a.querySelector("h2")?.textContent ?? "";
+                            const nameB =
+                                b.querySelector("h2")?.textContent ?? "";
+                            return nameA.localeCompare(nameB);
+                        });
+                        metricSections.forEach((section) =>
+                            metricContainer.append(section),
+                        );
+
+                        progressWrap.hidden = true;
+                        exportPdfBtn.disabled = false;
+                    } catch (err) {
+                        progressWrap.hidden = true;
+                        log("ERROR: " + (err.message || String(err)));
+                    } finally {
+                        generateBtn.disabled = false;
+                    }
+                });
+            }
+
+            main();
+        </script>
+    </body>
+</html>

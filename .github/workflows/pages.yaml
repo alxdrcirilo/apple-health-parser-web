@@ -1,0 +1,60 @@
+name: Publish to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout apple-health-parser-web
+        uses: actions/checkout@v4
+        with:
+          path: web
+
+      # Checked out as a sibling of `web`, matching the local dev layout the
+      # Makefile's `wheel` target (`PARSER_REPO := ../apple-health-parser`) expects.
+      - name: Checkout apple-health-parser
+        uses: actions/checkout@v4
+        with:
+          repository: alxdrcirilo/apple-health-parser
+          path: apple-health-parser
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          python-version: "3.12"
+
+      - name: Build the apple-health-parser wheel
+        working-directory: web
+        run: make wheel
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
