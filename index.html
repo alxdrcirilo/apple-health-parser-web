@@ -30,6 +30,54 @@
                 );
             })();
         </script>
+        <script>
+            // Flag small/touch viewports as mobile and lock the app out entirely:
+            // show the warning, hide the UI, and never even load Pyodide. Checked
+            // once at startup (window.isMobileDevice), since the app isn't usable
+            // without reloading anyway if someone resizes across the breakpoint.
+            (function () {
+                window.isMobileDevice =
+                    matchMedia("(max-width: 768px)").matches ||
+                    matchMedia("(pointer: coarse)").matches;
+                function applyMobileLock() {
+                    var warning = document.getElementById("mobile-warning");
+                    var app = document.getElementById("app");
+                    if (warning) warning.hidden = !window.isMobileDevice;
+                    if (app) app.hidden = window.isMobileDevice;
+                }
+                document.addEventListener("DOMContentLoaded", applyMobileLock);
+            })();
+        </script>
+        <script>
+            // Theme switch: swaps the stylesheet file and remembers the choice per
+            // browser. Wired up independently of main() so it still works on mobile,
+            // where main() (and Pyodide) never loads.
+            (function () {
+                function wireThemeToggle() {
+                    const themeToggle = document.getElementById("themeToggle");
+                    const themeStylesheet =
+                        document.getElementById("theme-stylesheet");
+                    themeToggle.addEventListener("click", () => {
+                        const next =
+                            document.documentElement.dataset.theme === "dark"
+                                ? "light"
+                                : "dark";
+                        document.documentElement.dataset.theme = next;
+                        if (themeStylesheet)
+                            themeStylesheet.href =
+                                next === "dark"
+                                    ? "terminal-dark.css"
+                                    : "terminal.css";
+                        try {
+                            localStorage.setItem("theme", next);
+                        } catch (err) {
+                            // Storage unavailable: the switch still works for this page view
+                        }
+                    });
+                }
+                document.addEventListener("DOMContentLoaded", wireThemeToggle);
+            })();
+        </script>
         <script src="https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js"></script>
         <script src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
         <style>
@@ -283,6 +331,15 @@
             #report.hide-summary table.summary {
                 display: none;
             }
+
+            #mobile-warning {
+                margin: 0 auto 1.5rem;
+                padding: 0.75rem 1rem;
+                font-weight: bold;
+                text-align: center;
+                border: 2px dashed var(--accent);
+                color: var(--accent);
+            }
         </style>
     </head>
     <body>
@@ -360,6 +417,12 @@
             </p>
         </header>
 
+        <p id="mobile-warning" hidden>
+            This site isn't meant to be used on mobile. For the best
+            experience, please switch to a desktop browser.
+        </p>
+
+        <div id="app">
         <fieldset style="box-shadow: 2px 2px 0 var(--foreground)">
             <legend>Input</legend>
             <div class="input-row">
@@ -421,6 +484,7 @@
         </fieldset>
 
         <div id="report"></div>
+        </div>
 
         <script>
             async function main() {
@@ -542,26 +606,6 @@ get_recap_report(pdf_section_data)
                     } finally {
                         exportPdfBtn.disabled = false;
                         exportPdfBtn.textContent = "Export PDF";
-                    }
-                });
-
-                // Theme switch: swaps the stylesheet file and remembers the choice per browser
-                const themeToggle = document.getElementById("themeToggle");
-                const themeStylesheet =
-                    document.getElementById("theme-stylesheet");
-                themeToggle.addEventListener("click", () => {
-                    const next =
-                        document.documentElement.dataset.theme === "dark"
-                            ? "light"
-                            : "dark";
-                    document.documentElement.dataset.theme = next;
-                    if (themeStylesheet)
-                        themeStylesheet.href =
-                            next === "dark" ? "terminal-dark.css" : "terminal.css";
-                    try {
-                        localStorage.setItem("theme", next);
-                    } catch (err) {
-                        // Storage unavailable: the switch still works for this page view
                     }
                 });
 
@@ -856,7 +900,7 @@ json.dumps(dataclasses.asdict(result))
                 });
             }
 
-            main();
+            if (!window.isMobileDevice) main();
         </script>
     </body>
 </html>
